@@ -93,3 +93,134 @@ def board_to_tensor(board: chess.Board):
         _fill_piece_planes(_orient(temp_board, flip), tensor, 18 + i * 12)
 
     return tensor
+
+
+"""
+Move (policy) encoding — the output side of the network.
+
+AlphaZero move representation: 73 planes x 8 x 8 = 4672 possible moves.
+Each move is indexed by (plane, from_rank, from_file) and flattened as
+    index = plane * 64 + from_rank * 8 + from_file
+so the policy vector matches a conv policy head that outputs (73, 8, 8),
+laid out the same channels-first way as the board tensor above.
+
+Plane layout (all in the side-to-move oriented frame, so the mover always
+"plays up the board" with increasing rank):
+  planes  0-55 - queen-like moves: 8 directions x 7 distances (dir*7 + dist-1)
+  planes 56-63 - the 8 knight moves
+  planes 64-72 - underpromotions: 3 directions x 3 pieces (knight, bishop, rook)
+
+Queen promotions are encoded as ordinary forward queen moves; only knight/
+bishop/rook promotions use the underpromotion planes.
+"""
+
+POLICY_SIZE = 73 * 64  # 4672
+
+# Queen-move directions as (d_rank, d_file), fixed order -> plane group.
+_QUEEN_DIRS = [
+    (1, 0),   # N
+    (1, 1),   # NE
+    (0, 1),   # E
+    (-1, 1),  # SE
+    (-1, 0),  # S
+    (-1, -1),  # SW
+    (0, -1),  # W
+    (1, -1),  # NW
+]
+
+# Knight moves as (d_rank, d_file), fixed order -> plane 56 + index.
+_KNIGHT_DIRS = [
+    (2, 1), (1, 2), (-1, 2), (-2, 1),
+    (-2, -1), (-1, -2), (1, -2), (2, -1),
+]
+
+# Underpromotion pieces in plane order (knight, bishop, rook).
+_UNDERPROMO_PIECES = [chess.KNIGHT, chess.BISHOP, chess.ROOK]
+
+
+def _oriented_squares(move: chess.Move, flip: bool):
+    """Return (from_sq, to_sq) mapped into the side-to-move oriented frame.
+
+    Mirrors both squares vertically when Black is to move, matching the board
+    orientation used by `board_to_tensor` (chess.square_mirror flips the rank).
+    """
+    if flip:
+        return chess.square_mirror(move.from_square), chess.square_mirror(move.to_square)
+    return move.from_square, move.to_square
+
+
+def move_to_index(move: chess.Move, turn: bool) -> int:
+    """Map a `chess.Move` to its policy index in [0, POLICY_SIZE).
+
+    `turn` is the side to move (board.turn) so the move can be oriented the
+    same way as the board tensor.
+    """
+    flip = turn == chess.BLACK
+    from_sq, to_sq = _oriented_squares(move, flip)
+
+    from_rank, from_file = chess.square_rank(from_sq), chess.square_file(from_sq)
+    d_rank = chess.square_rank(to_sq) - from_rank
+    d_file = chess.square_file(to_sq) - from_file
+
+    # Underpromotion (knight/bishop/rook): 3 directions x 3 pieces.
+    if move.promotion is not None and move.promotion != chess.QUEEN:
+        dir_index = d_file + 1  # -1,0,1 -> 0,1,2 (capture-left, push, capture-right)
+        piece_index = _UNDERPROMO_PIECES.index(move.promotion)
+        plane = 64 + dir_index * 3 + piece_index
+        return plane * 64 + from_rank * 8 + from_file
+
+    # Knight move.
+    if (d_rank, d_file) in _KNIGHT_DIRS:
+        plane = 56 + _KNIGHT_DIRS.index((d_rank, d_file))
+        return plane * 64 + from_rank * 8 + from_file
+
+    # Queen-like move (includes queen promotions and normal king/pawn steps).
+    step_rank = (d_rank > 0) - (d_rank < 0)
+    step_file = (d_file > 0) - (d_file < 0)
+    distance = max(abs(d_rank), abs(d_file))
+    dir_index = _QUEEN_DIRS.index((step_rank, step_file))
+    plane = dir_index * 7 + (distance - 1)
+    return plane * 64 + from_rank * 8 + from_file
+
+
+def index_to_move(index: int, board: chess.Board) -> chess.Move:
+    """Inverse of `move_to_index`: rebuild the `chess.Move` on `board`.
+
+    `board` supplies the side to move (for un-orienting) and lets us detect
+    when a queen-plane move is actually a queen promotion (pawn reaching the
+    last rank).
+    """
+    plane, square = divmod(index, 64)
+    from_rank, from_file = divmod(square, 8)
+
+    if plane < 56:  # queen-like
+        dir_index, dist = divmod(plane, 7)
+        distance = dist + 1
+        step_rank, step_file = _QUEEN_DIRS[dir_index]
+        d_rank, d_file = step_rank * distance, step_file * distance
+        promotion = None
+    elif plane < 64:  # knight
+        d_rank, d_file = _KNIGHT_DIRS[plane - 56]
+        promotion = None
+    else:  # underpromotion
+        offset = plane - 64
+        dir_index, piece_index = divmod(offset, 3)
+        d_rank, d_file = 1, dir_index - 1
+        promotion = _UNDERPROMO_PIECES[piece_index]
+
+    to_rank, to_file = from_rank + d_rank, from_file + d_file
+    from_sq = chess.square(from_file, from_rank)
+    to_sq = chess.square(to_file, to_rank)
+
+    # Un-orient back into the real board's frame.
+    flip = board.turn == chess.BLACK
+    if flip:
+        from_sq, to_sq = chess.square_mirror(from_sq), chess.square_mirror(to_sq)
+
+    # Queen-plane pawn move onto the back rank is a queen promotion.
+    if promotion is None:
+        piece = board.piece_at(from_sq)
+        if piece is not None and piece.piece_type == chess.PAWN and chess.square_rank(to_sq) in (0, 7):
+            promotion = chess.QUEEN
+
+    return chess.Move(from_sq, to_sq, promotion=promotion)
