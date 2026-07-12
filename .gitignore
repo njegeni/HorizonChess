@@ -1,3 +1,10 @@
-__pycache__/dataset.cpython-313.pyc
+# Decompressed dataset (derived from datasets/pgnmentor.pgn.zst) — too big for git
+pgnmentor.pgn
+*.pgn
+
+__pycache__/
+*.pyc
+
+.venv/
+
 model.py
-__pycache__/encoding.cpython-313.pyc
