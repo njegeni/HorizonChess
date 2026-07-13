@@ -18,6 +18,7 @@ import argparse
 import os
 import time
 from dataclasses import asdict, dataclass
+from itertools import islice
 
 import torch
 from torch.utils.data import DataLoader
@@ -49,6 +50,12 @@ class TrainConfig:
     log_interval: int = 50
     ckpt_interval: int = 5000
     ckpt_dir: str = "checkpoints"
+
+    # validation
+    do_val: bool = True
+    val_interval: int = 2000            # run eval every N steps
+    val_batches: int = 50               # batches per eval pass
+    val_every: int = 50                 # 1 in N games held out for validation
 
 
 def select_device() -> torch.device:
@@ -86,6 +93,28 @@ class Meter:
         return {k: v / max(self.count, 1) for k, v in self.sums.items()}
 
 
+@torch.no_grad()
+def evaluate(model, val_loader, device, val_batches, loss_kwargs) -> dict:
+    """Run `val_batches` batches from the held-out loader and return averaged
+    metrics. Restores the model to train mode before returning."""
+    model.eval()
+    meter = Meter()
+    for batch in islice(val_loader, val_batches):
+        inputs = batch["input"].to(device, non_blocking=True)
+        targets = {
+            "policy": batch["policy"].to(device, non_blocking=True),
+            "value": batch["value"].to(device, non_blocking=True),
+            "lookahead": batch["lookahead"].to(device, non_blocking=True),
+            "lookahead_mask": batch["lookahead_mask"].to(device, non_blocking=True),
+        }
+        outputs = model(inputs)
+        _, parts = compute_loss(outputs, targets, **loss_kwargs)
+        acc = (outputs["policy"].argmax(1) == targets["policy"]).float().mean()
+        meter.update({**{k: v.item() for k, v in parts.items()}, "acc": acc.item()})
+    model.train()
+    return meter.averages()
+
+
 def save_checkpoint(path, step, model, optimizer, model_cfg, train_cfg):
     os.makedirs(os.path.dirname(path), exist_ok=True)
     torch.save(
@@ -103,12 +132,18 @@ def save_checkpoint(path, step, model, optimizer, model_cfg, train_cfg):
 def train(cfg: TrainConfig, model_cfg: ModelConfig, resume: str | None = None):
     # The dataset and the model must agree on how many horizons the aux head
     # covers, or the lookahead logits and targets silently disagree in length.
-    dataset = PGNDataset(cfg.pgn_path, lookahead_horizon=model_cfg.lookahead_horizon)
+    dataset = PGNDataset(cfg.pgn_path, lookahead_horizon=model_cfg.lookahead_horizon,
+                         split="train", val_every=cfg.val_every)
     assert dataset.lookahead_horizon == model_cfg.lookahead_horizon
 
     device = select_device()
     use_amp = device.type == "cuda"
     print(f"device: {device} | AMP: {use_amp}")
+
+    loss_kwargs = dict(
+        value_weight=cfg.value_weight, gamma=cfg.gamma,
+        w_opp=cfg.w_opp, w_self=cfg.w_self, label_smoothing=cfg.label_smoothing,
+    )
 
     loader = DataLoader(
         dataset,
@@ -118,6 +153,21 @@ def train(cfg: TrainConfig, model_cfg: ModelConfig, resume: str | None = None):
         persistent_workers=cfg.num_workers > 0,
         drop_last=True,
     )
+
+    val_loader = None
+    if cfg.do_val:
+        # A few workers is plenty for a short eval pass; reuse the same split
+        # geometry so val games are exactly those training never sees.
+        val_dataset = PGNDataset(cfg.pgn_path,
+                                 lookahead_horizon=model_cfg.lookahead_horizon,
+                                 split="val", val_every=cfg.val_every)
+        val_loader = DataLoader(
+            val_dataset,
+            batch_size=cfg.batch_size,
+            num_workers=min(cfg.num_workers, 2),
+            pin_memory=(device.type == "cuda"),
+            drop_last=True,
+        )
 
     model = ChessNet(model_cfg).to(device)
     optimizer = torch.optim.AdamW(model.parameters(), lr=cfg.lr,
@@ -156,14 +206,7 @@ def train(cfg: TrainConfig, model_cfg: ModelConfig, resume: str | None = None):
             optimizer.zero_grad(set_to_none=True)
             with torch.amp.autocast(device_type=device.type, enabled=use_amp):
                 outputs = model(inputs)
-                total, parts = compute_loss(
-                    outputs, targets,
-                    value_weight=cfg.value_weight,
-                    gamma=cfg.gamma,
-                    w_opp=cfg.w_opp,
-                    w_self=cfg.w_self,
-                    label_smoothing=cfg.label_smoothing,
-                )
+                total, parts = compute_loss(outputs, targets, **loss_kwargs)
 
             scaler.scale(total).backward()
             if cfg.grad_clip > 0:
@@ -194,6 +237,14 @@ def train(cfg: TrainConfig, model_cfg: ModelConfig, resume: str | None = None):
                 save_checkpoint(path, step, model, optimizer, model_cfg, cfg)
                 print(f"  checkpoint -> {path}")
 
+            if val_loader is not None and step % cfg.val_interval == 0:
+                val = evaluate(model, val_loader, device, cfg.val_batches, loss_kwargs)
+                print(
+                    f"  [val] total {val['total']:.3f} | policy {val['policy']:.3f} "
+                    f"(acc {val['acc']:.3f}) | value {val['value']:.3f} | "
+                    f"aux {val['aux']:.4f}"
+                )
+
         if step >= cfg.max_steps:
             break
 
@@ -218,6 +269,9 @@ def parse_args() -> tuple[TrainConfig, ModelConfig, str | None]:
                    help="lookahead horizon n; sets both dataset and model")
     p.add_argument("--channels", type=int, default=ModelConfig.channels)
     p.add_argument("--num-blocks", type=int, default=ModelConfig.num_blocks)
+    p.add_argument("--val-interval", type=int, default=TrainConfig.val_interval)
+    p.add_argument("--val-batches", type=int, default=TrainConfig.val_batches)
+    p.add_argument("--no-val", action="store_true", help="disable validation")
     p.add_argument("--resume", default=None)
     a = p.parse_args()
 
@@ -225,7 +279,8 @@ def parse_args() -> tuple[TrainConfig, ModelConfig, str | None]:
         pgn_path=a.pgn_path, batch_size=a.batch_size, lr=a.lr,
         num_workers=a.num_workers, max_steps=a.max_steps, epochs=a.epochs,
         ckpt_dir=a.ckpt_dir, ckpt_interval=a.ckpt_interval,
-        log_interval=a.log_interval,
+        log_interval=a.log_interval, do_val=not a.no_val,
+        val_interval=a.val_interval, val_batches=a.val_batches,
     )
     model_cfg = ModelConfig(
         channels=a.channels, num_blocks=a.num_blocks, lookahead_horizon=a.horizon,

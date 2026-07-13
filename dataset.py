@@ -56,14 +56,26 @@ class PGNDataset(IterableDataset):
     Each worker in a multi-worker DataLoader reads the same file independently
     and keeps only every Nth game (N = num_workers), offset by its worker id,
     so the workers together cover every game exactly once.
+
+    `split` selects a deterministic holdout: every `val_every`-th game (by global
+    index) is the validation set, the rest are training. Build two datasets over
+    the same PGN with split='train' / split='val' to get disjoint streams.
     """
 
     def __init__(self, pgn_path: str, lookahead_horizon: int = 2,
-                 skip_unfinished: bool = True):
+                 skip_unfinished: bool = True, split: str = "train",
+                 val_every: int = 50):
         super().__init__()
+        if split not in ("train", "val"):
+            raise ValueError(f"split must be 'train' or 'val', got {split!r}")
         self.pgn_path = pgn_path
         self.lookahead_horizon = lookahead_horizon
         self.skip_unfinished = skip_unfinished
+        # Deterministic holdout by global game index: every `val_every`-th game
+        # is a validation game (split='val'); the rest are training games. The
+        # split is independent of worker count, so train and val never overlap.
+        self.split = split
+        self.val_every = val_every
 
     def __iter__(self):
         worker = get_worker_info()
@@ -76,11 +88,16 @@ class PGNDataset(IterableDataset):
                 game = chess.pgn.read_game(pgn_file)
                 if game is None:
                     break
-                # Stride: this worker only handles its share of games.
-                if game_index % num_workers != worker_id:
-                    game_index += 1
-                    continue
+                idx = game_index
                 game_index += 1
+
+                # Stride: this worker only handles its share of games.
+                if idx % num_workers != worker_id:
+                    continue
+                # Train/val holdout: keep only the games for this split.
+                is_val = idx % self.val_every == 0
+                if (self.split == "val") != is_val:
+                    continue
 
                 white_value = _RESULT_TO_WHITE_VALUE.get(game.headers.get("Result"))
                 if white_value is None:
