@@ -54,7 +54,7 @@ class TrainConfig:
     # validation
     do_val: bool = True
     val_interval: int = 2000            # run eval every N steps
-    val_batches: int = 50               # batches per eval pass
+    val_batches: int = 20               # batches in the cached val set
     val_every: int = 50                 # 1 in N games held out for validation
 
 
@@ -93,13 +93,32 @@ class Meter:
         return {k: v / max(self.count, 1) for k, v in self.sums.items()}
 
 
+def build_val_cache(pgn_path, model_cfg, cfg) -> list:
+    """Materialize a FIXED validation set into memory once.
+
+    Validation games are sparse (1 in `val_every`), so streaming them fresh on
+    every eval means re-parsing a big chunk of the PGN each time. Instead we pull
+    `val_batches` batches once, hold them in CPU memory, and reuse them for every
+    eval -- so evals are just fast forward passes, and the metric is measured on
+    the same positions each time (comparable across steps)."""
+    val_dataset = PGNDataset(pgn_path, lookahead_horizon=model_cfg.lookahead_horizon,
+                             split="val", val_every=cfg.val_every)
+    loader = DataLoader(val_dataset, batch_size=cfg.batch_size,
+                        num_workers=min(cfg.num_workers, 2), drop_last=True)
+    print(f"building validation set ({cfg.val_batches} batches x {cfg.batch_size}) "
+          f"-- one-time scan of the PGN for held-out games...")
+    cache = list(islice(loader, cfg.val_batches))
+    print(f"  cached {len(cache)} validation batches "
+          f"({len(cache) * cfg.batch_size} positions)")
+    return cache
+
+
 @torch.no_grad()
-def evaluate(model, val_loader, device, val_batches, loss_kwargs) -> dict:
-    """Run `val_batches` batches from the held-out loader and return averaged
-    metrics. Restores the model to train mode before returning."""
+def evaluate(model, val_cache, device, loss_kwargs) -> dict:
+    """Average metrics over the cached validation batches. Restores train mode."""
     model.eval()
     meter = Meter()
-    for batch in islice(val_loader, val_batches):
+    for batch in val_cache:
         inputs = batch["input"].to(device, non_blocking=True)
         targets = {
             "policy": batch["policy"].to(device, non_blocking=True),
@@ -154,20 +173,9 @@ def train(cfg: TrainConfig, model_cfg: ModelConfig, resume: str | None = None):
         drop_last=True,
     )
 
-    val_loader = None
+    val_cache = None
     if cfg.do_val:
-        # A few workers is plenty for a short eval pass; reuse the same split
-        # geometry so val games are exactly those training never sees.
-        val_dataset = PGNDataset(cfg.pgn_path,
-                                 lookahead_horizon=model_cfg.lookahead_horizon,
-                                 split="val", val_every=cfg.val_every)
-        val_loader = DataLoader(
-            val_dataset,
-            batch_size=cfg.batch_size,
-            num_workers=min(cfg.num_workers, 2),
-            pin_memory=(device.type == "cuda"),
-            drop_last=True,
-        )
+        val_cache = build_val_cache(cfg.pgn_path, model_cfg, cfg)
 
     model = ChessNet(model_cfg).to(device)
     optimizer = torch.optim.AdamW(model.parameters(), lr=cfg.lr,
@@ -237,8 +245,8 @@ def train(cfg: TrainConfig, model_cfg: ModelConfig, resume: str | None = None):
                 save_checkpoint(path, step, model, optimizer, model_cfg, cfg)
                 print(f"  checkpoint -> {path}")
 
-            if val_loader is not None and step % cfg.val_interval == 0:
-                val = evaluate(model, val_loader, device, cfg.val_batches, loss_kwargs)
+            if val_cache is not None and step % cfg.val_interval == 0:
+                val = evaluate(model, val_cache, device, loss_kwargs)
                 print(
                     f"  [val] total {val['total']:.3f} | policy {val['policy']:.3f} "
                     f"(acc {val['acc']:.3f}) | value {val['value']:.3f} | "
