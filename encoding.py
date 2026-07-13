@@ -28,9 +28,10 @@ import chess
 def _fill_piece_planes(board: chess.Board, tensor: np.ndarray, base: int):
     """Fill the 12 piece planes at tensor[base:base+12] for `board`.
 
-    White pieces go to base..base+5, black pieces to base+6..base+11,
-    ordered pawn, knight, bishop, rook, queen, king (piece_type - 1).
-    Row = rank (0 = rank 1), column = file (0 = file a).
+    White pieces are base 0 to base 5,
+    Black pieces are base pieces 6 to 11
+    ordered pawn, knight, bishop, rook, queen, king (piece_type - 1)
+    Row = square_rank (0 = rank 1), column = square_file (0 = file a).
     """
     for square, piece in board.piece_map().items():
         row = chess.square_rank(square)
@@ -38,16 +39,16 @@ def _fill_piece_planes(board: chess.Board, tensor: np.ndarray, base: int):
         idx = piece.piece_type - 1
         if piece.color == chess.BLACK:
             idx += 6
+        # tensor[plane, x (row), y (col)]
         tensor[base + idx, row, col] = 1.0
 
 
 def _orient(board: chess.Board, flip: bool) -> chess.Board:
     """Return the board oriented to the side to move.
 
-    When `flip` is True (Black to move) the board is mirrored vertically with
-    piece colors swapped, so the side to move always 'plays up the board' and
-    its pieces occupy planes 0-5. `board.mirror()` returns a copy, so the input
-    board is never mutated.
+    flip is True when it's black to move,
+    mirrors board vertically with piece colors swapped so the side to move always plays "up"
+    board.mirror() returns a copy
     """
     return board.mirror() if flip else board
 
@@ -59,7 +60,7 @@ def board_to_tensor(board: chess.Board):
     flip = board.turn == chess.BLACK
     oriented = _orient(board, flip)
 
-    # --- current state s_t: planes 0-17 (from the oriented board) ---
+    # current state s_t: planes 0-17 (from the oriented board) ---
     _fill_piece_planes(oriented, tensor, 0)
 
     # plane 12 - side to move (always White after orientation -> all 1s)
@@ -82,7 +83,7 @@ def board_to_tensor(board: chess.Board):
         col = chess.square_file(oriented.ep_square)
         tensor[17, row, col] = 1.0
 
-    # -history s_{t-1} .. s_{t-7}: 12 piece planes each, from plane 18
+    # history s_{t-1} .. s_{t-7}: 12 piece planes each, from plane 18
     # Pop moves from the original board, then apply the SAME orientation as the
     # current state so the whole stack stays spatially consistent.
     temp_board = board.copy()
@@ -96,6 +97,7 @@ def board_to_tensor(board: chess.Board):
 
 
 """
+(Claude cooked)
 Move (policy) encoding — the output side of the network.
 
 AlphaZero move representation: 73 planes x 8 x 8 = 4672 possible moves.
