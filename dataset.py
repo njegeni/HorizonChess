@@ -35,12 +35,20 @@ DataLoader each worker strides over a disjoint set of games, so no example is
 produced twice.
 """
 
+import logging
+
 import chess
 import chess.pgn
 import torch
 from torch.utils.data import IterableDataset, get_worker_info
 
 from encoding import board_to_tensor, move_to_index
+
+# Real-world PGN archives contain games with illegal moves / parse errors
+# (typos, corrupt variations). python-chess logs these and truncates the
+# affected game rather than raising; silence that logger so a long training run
+# isn't buried in tracebacks. We skip such games entirely below.
+logging.getLogger("chess.pgn").setLevel(logging.CRITICAL)
 
 # Game result string -> value from White's perspective.
 _RESULT_TO_WHITE_VALUE = {
@@ -85,7 +93,11 @@ class PGNDataset(IterableDataset):
         with open(self.pgn_path, "r", encoding="utf-8", errors="replace") as pgn_file:
             game_index = 0
             while True:
-                game = chess.pgn.read_game(pgn_file)
+                try:
+                    game = chess.pgn.read_game(pgn_file)
+                except Exception:
+                    # Unreadable game; python-chess resyncs to the next one.
+                    continue
                 if game is None:
                     break
                 idx = game_index
@@ -97,6 +109,10 @@ class PGNDataset(IterableDataset):
                 # Train/val holdout: keep only the games for this split.
                 is_val = idx % self.val_every == 0
                 if (self.split == "val") != is_val:
+                    continue
+                # Skip games python-chess flagged (illegal move, truncated
+                # variation): their mainline is only partially parsed.
+                if game.errors:
                     continue
 
                 white_value = _RESULT_TO_WHITE_VALUE.get(game.headers.get("Result"))
