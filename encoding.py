@@ -61,7 +61,7 @@ def board_to_tensor(board: chess.Board):
 
     # plane 12 = side to move, always white after orientation
     if oriented.turn == chess.WHITE:
-        tensor[12, :, :] == 1.0
+        tensor[12, :, :] = 1.0
 
     #planes 13-16 = castling rights
     if oriented.has_kingside_castling_rights(chess.WHITE):
@@ -92,4 +92,7 @@ def board_to_tensor(board: chess.Board):
     return tensor
 
 
+
+#now the second part of the encoding, we need to implement move encoding/decoding
+# so the NN can process our moves
 
