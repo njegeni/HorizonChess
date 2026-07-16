@@ -34,9 +34,19 @@ def _fill_piece_planes(board: chess.Board, tensor: np.ndarray, base:int ):
         row = chess.square_rank(square)
         col = chess.square_file(square)
         # 1 is pawn, 2 is knight, 3 is bishop, 4 is rook, 5 is queen, 6 is king
-        idx = piece.piece_type - 1
+        index = piece.piece_type - 1
         if piece.color == chess.BLACK:
             index += 6
         # tensor[plane, row, col]
         tensor[base + index, row, col] = 1.0
+
+def _perspective(board: chess.Board, flip: bool) -> chess.Board:
+    """
+    Checks whose turn it is and flips the board if its black 
+    (in order to train for maximal output always)
+    flip = true -> creates a copy of the board and black pieces are on the bottom
+    """
+    return board.mirror() if flip else board
+
+
 
