@@ -21,3 +21,4 @@ for square, piece in board.piece_map().items():
 # piece.piece_type - 1 = plane they are on
 # for black pieces id += 6
 
+
