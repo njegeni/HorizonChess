@@ -96,3 +96,74 @@ def board_to_tensor(board: chess.Board):
 #now the second part of the encoding, we need to implement move encoding/decoding
 # so the NN can process our moves
 
+# define direction/knight/unique move offsets for each piece type
+
+#queen like moves are used for rook, bishop, queen, king and pawn
+queen_directions = [
+    (1, 0), (-1, 0), (0, 1), (0, -1),  # north south east west
+    (1, 1), (-1, -1), (1, -1), (-1, 1)  # northeast northwest southeast southwest
+]
+
+#knight needs its own 8 unique moves
+knight_directions = [
+    (2, 1), (2, -1), (-2, 1), (-2, -1),
+    (1, 2), (1, -2), (-1, 2), (-1, -2),
+]
+
+#underpromotion
+underpromotion_pieces = [chess.KNIGHT, chess.BISHOP, chess.ROOK]
+underpromotion_directions = [(1,0), (1,1), (1,-1)]  # forward, capture-right, capture left
+
+
+# The policy is an 8x8x73 = 4672 vector (AlphaZero layout):
+#   planes 0-55  : queen-like moves, 8 directions x 7 distances (dir_idx * 7 + dist-1)
+#   planes 56-63 : the 8 knight moves
+#   planes 64-72 : underpromotions, 3 pieces x 3 directions (knight/bishop/rook)
+# Queen-promotions are encoded as ordinary distance-1 queen moves.
+
+def _move_to_plane(from_sq: int, to_sq: int, promotion):
+    """
+    Maps an already-oriented move to (plane, row, col).
+    Assumes the side to move is 'white' (moving toward increasing rank).
+    """
+    fr, fc = chess.square_rank(from_sq), chess.square_file(from_sq)
+    tr, tc = chess.square_rank(to_sq), chess.square_file(to_sq)
+    dr, dc = tr - fr, tc - fc
+
+    # underpromotion to knight/bishop/rook (queen promo falls through to queen move)
+    if promotion in underpromotion_pieces:
+        piece_idx = underpromotion_pieces.index(promotion)
+        dir_idx = underpromotion_directions.index((dr, dc))
+        plane = 64 + piece_idx * 3 + dir_idx
+        return plane, fr, fc
+
+    # knight move
+    if (dr, dc) in knight_directions:
+        plane = 56 + knight_directions.index((dr, dc))
+        return plane, fr, fc
+
+    # queen-like move: reduce to a unit direction + distance
+    dist = max(abs(dr), abs(dc))
+    unit = (dr // dist, dc // dist)  # exact since dr, dc are multiples of dist
+    dir_idx = queen_directions.index(unit)
+    plane = dir_idx * 7 + (dist - 1)
+    return plane, fr, fc
+
+
+def encode_move(move: chess.Move, board: chess.Board) -> int:
+    """
+    Encodes a move into a flat policy index in [0, 4671].
+    Orientation matches board_to_tensor: if it's black's turn, mirror the
+    squares vertically so the mover always faces up the board.
+    Flat layout: plane * 64 + row * 8 + col.
+    """
+    flip = board.turn == chess.BLACK
+
+    from_sq = move.from_square
+    to_sq = move.to_square
+    if flip:
+        from_sq = chess.square_mirror(from_sq)
+        to_sq = chess.square_mirror(to_sq)
+
+    plane, row, col = _move_to_plane(from_sq, to_sq, move.promotion)
+    return plane * 64 + row * 8 + col
