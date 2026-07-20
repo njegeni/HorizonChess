@@ -1,6 +1,7 @@
+import random
 import numpy as np
 import chess
-from encoding import _fill_piece_planes, _perspective, board_to_tensor
+from encoding import _fill_piece_planes, _perspective, board_to_tensor, encode_move, decode_move
 
 
 #testing whether white pawns and black pawns are in the right spaces
@@ -40,6 +41,44 @@ def test_board_to_tensor_start():
     # no en passant square, and no history at the start of the game
     assert t[17].sum() == 0
     assert t[18:].sum() == 0
+
+
+#helper: play random legal moves to reach a variety of positions to test on
+def random_positions(count, max_plies, seed=0):
+    rng = random.Random(seed)
+    yield chess.Board()  # always include the starting position
+    for _ in range(count):
+        board = chess.Board()
+        for _ in range(rng.randint(1, max_plies)):
+            moves = list(board.legal_moves)
+            if not moves:
+                break  # checkmate / stalemate
+            board.push(rng.choice(moves))
+        yield board
+
+
+#every legal move must survive encode -> decode unchanged, and stay in range
+def test_encode_decode_roundtrip():
+    for board in random_positions(count=300, max_plies=60):
+        for move in board.legal_moves:
+            index = encode_move(move, board)
+            assert 0 <= index < 4672
+            restored = decode_move(index, board)
+            assert restored == move, (
+                f"{move.uci()} -> {index} -> {restored.uci()} in {board.fen()}"
+            )
+
+
+#no two legal moves from a position may map to the same policy index
+def test_no_index_collisions():
+    for board in random_positions(count=300, max_plies=60):
+        seen = {}
+        for move in board.legal_moves:
+            index = encode_move(move, board)
+            assert index not in seen, (
+                f"collision {index}: {move.uci()} vs {seen[index].uci()} in {board.fen()}"
+            )
+            seen[index] = move
 
 
 
