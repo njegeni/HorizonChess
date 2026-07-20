@@ -11,6 +11,7 @@ validation set.
 """
 
 import argparse
+import math
 import os
 import sys
 import time
@@ -30,6 +31,7 @@ class TrainConfig:
     pgn_path: str = "pgnmentor.pgn"
     batch_size: int = 256
     lr: float = 1e-3
+    min_lr: float = 1e-5           # cosine decay floor
     weight_decay: float = 1e-4
     warmup_steps: int = 1000
     grad_clip: float = 4.0
@@ -64,10 +66,13 @@ def select_device():
 
 
 def lr_at(step, cfg):
-    # linear warmup, then constant
+    # linear warmup, then cosine decay from lr down to min_lr over the run
     if cfg.warmup_steps > 0 and step < cfg.warmup_steps:
         return cfg.lr * (step + 1) / cfg.warmup_steps
-    return cfg.lr
+    progress = (step - cfg.warmup_steps) / max(1, cfg.max_steps - cfg.warmup_steps)
+    progress = min(max(progress, 0.0), 1.0)          # clamp for steps past max
+    cosine = 0.5 * (1.0 + math.cos(math.pi * progress))
+    return cfg.min_lr + (cfg.lr - cfg.min_lr) * cosine
 
 
 class Meter:
@@ -246,6 +251,7 @@ def parse_args():
     p.add_argument("--pgn", dest="pgn_path", default=TrainConfig.pgn_path)
     p.add_argument("--batch-size", type=int, default=TrainConfig.batch_size)
     p.add_argument("--lr", type=float, default=TrainConfig.lr)
+    p.add_argument("--min-lr", type=float, default=TrainConfig.min_lr)
     p.add_argument("--num-workers", type=int, default=TrainConfig.num_workers)
     p.add_argument("--shuffle-buffer", type=int, default=TrainConfig.shuffle_buffer)
     p.add_argument("--max-steps", type=int, default=TrainConfig.max_steps)
@@ -264,7 +270,7 @@ def parse_args():
     a = p.parse_args()
 
     train_cfg = TrainConfig(
-        pgn_path=a.pgn_path, batch_size=a.batch_size, lr=a.lr,
+        pgn_path=a.pgn_path, batch_size=a.batch_size, lr=a.lr, min_lr=a.min_lr,
         num_workers=a.num_workers, max_steps=a.max_steps, epochs=a.epochs,
         shuffle_buffer=a.shuffle_buffer,
         ckpt_dir=a.ckpt_dir, ckpt_interval=a.ckpt_interval,
