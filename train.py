@@ -11,6 +11,7 @@ validation set.
 """
 
 import argparse
+import glob
 import math
 import os
 import sys
@@ -49,6 +50,7 @@ class TrainConfig:
     log_interval: int = 100
     ckpt_interval: int = 10_000
     ckpt_dir: str = "checkpoints"
+    keep_last: int = 3             # keep only the newest N checkpoints (0 = keep all)
 
     # validation
     do_val: bool = True
@@ -134,6 +136,16 @@ def evaluate(model, val_cache, device, loss_kwargs):
     return meter.averages()
 
 
+def prune_checkpoints(ckpt_dir, keep):
+    """Delete all but the newest `keep` step_*.pt files (0 = keep everything).
+    Names are zero-padded so lexicographic order == step order."""
+    if keep <= 0:
+        return
+    files = sorted(glob.glob(os.path.join(ckpt_dir, "step_*.pt")))
+    for old in files[:-keep]:
+        os.remove(old)
+
+
 def save_checkpoint(path, step, model, optimizer, model_cfg, train_cfg):
     os.makedirs(os.path.dirname(path), exist_ok=True)
     torch.save({
@@ -143,6 +155,7 @@ def save_checkpoint(path, step, model, optimizer, model_cfg, train_cfg):
         "model_config": asdict(model_cfg),
         "train_config": asdict(train_cfg),
     }, path)
+    prune_checkpoints(os.path.dirname(path), train_cfg.keep_last)
 
 
 def train(cfg, model_cfg, resume=None):
@@ -258,6 +271,7 @@ def parse_args():
     p.add_argument("--epochs", type=int, default=TrainConfig.epochs)
     p.add_argument("--ckpt-dir", default=TrainConfig.ckpt_dir)
     p.add_argument("--ckpt-interval", type=int, default=TrainConfig.ckpt_interval)
+    p.add_argument("--keep-last", type=int, default=TrainConfig.keep_last)
     p.add_argument("--log-interval", type=int, default=TrainConfig.log_interval)
     p.add_argument("--val-interval", type=int, default=TrainConfig.val_interval)
     p.add_argument("--val-batches", type=int, default=TrainConfig.val_batches)
@@ -273,7 +287,7 @@ def parse_args():
         pgn_path=a.pgn_path, batch_size=a.batch_size, lr=a.lr, min_lr=a.min_lr,
         num_workers=a.num_workers, max_steps=a.max_steps, epochs=a.epochs,
         shuffle_buffer=a.shuffle_buffer,
-        ckpt_dir=a.ckpt_dir, ckpt_interval=a.ckpt_interval,
+        ckpt_dir=a.ckpt_dir, ckpt_interval=a.ckpt_interval, keep_last=a.keep_last,
         log_interval=a.log_interval, do_val=not a.no_val,
         val_interval=a.val_interval, val_batches=a.val_batches,
     )
