@@ -124,7 +124,7 @@ underpromotion_directions = [(1,0), (1,1), (1,-1)]  # forward, capture-right, ca
 def _move_to_plane(from_sq: int, to_sq: int, promotion):
     """
     Maps an already-oriented move to (plane, row, col).
-    Assumes the side to move is 'white' (moving toward increasing rank).
+    Side to move is always assumed to be white
     """
     fr, fc = chess.square_rank(from_sq), chess.square_file(from_sq)
     tr, tc = chess.square_rank(to_sq), chess.square_file(to_sq)
@@ -167,3 +167,60 @@ def encode_move(move: chess.Move, board: chess.Board) -> int:
 
     plane, row, col = _move_to_plane(from_sq, to_sq, move.promotion)
     return plane * 64 + row * 8 + col
+
+
+#now that we imlpemented a encoding we need to imlpement the decoding, turning the policy output into an actual chess.Move
+
+def _plane_to_move(plane: int, row: int, col: int):
+    """
+    Inverse of _move_to_plane. Given a (plane, row, col) in the oriented
+    ('white to move') frame, returns (from_sq, to_sq, promotion).
+    Promotion is only set for underpromotions; a queen-promotion looks like a
+    plain queen move here and is resolved by the caller against the real board.
+    """
+    from_sq = chess.square(col, row)  # chess.square(file, rank)
+
+    if plane < 56:  # queen-like move
+        dir_idx = plane // 7
+        dist = plane % 7 + 1
+        dr, dc = queen_directions[dir_idx]
+        tr, tc = row + dr * dist, col + dc * dist
+        promotion = None
+    elif plane < 64:  # knight move
+        dr, dc = knight_directions[plane - 56]
+        tr, tc = row + dr, col + dc
+        promotion = None
+    else:  # underpromotion
+        idx = plane - 64
+        piece_idx, dir_idx = idx // 3, idx % 3
+        dr, dc = underpromotion_directions[dir_idx]
+        tr, tc = row + dr, col + dc
+        promotion = underpromotion_pieces[piece_idx]
+
+    to_sq = chess.square(tc, tr)
+    return from_sq, to_sq, promotion
+
+
+def decode_move(index: int, board: chess.Board) -> chess.Move:
+    "Decodes the move from the flat policy index to a chess.Move"
+    flip = board.turn == chess.BLACK
+
+    plane = index // 64
+    sq = index % 64
+    row, col = sq // 8, sq % 8
+
+    from_sq, to_sq, promotion = _plane_to_move(plane, row, col)
+
+    # mirror back to the real board if it was black's turn (self-inverse flip)
+    if flip:
+        from_sq = chess.square_mirror(from_sq)
+        to_sq = chess.square_mirror(to_sq)
+
+    # a queen-move plane onto the last rank by a pawn is an (auto-)queen promotion
+    if promotion is None:
+        piece = board.piece_at(from_sq)
+        if piece is not None and piece.piece_type == chess.PAWN and chess.square_rank(to_sq) in (0, 7):
+            promotion = chess.QUEEN
+
+    return chess.Move(from_sq, to_sq, promotion=promotion)
+
