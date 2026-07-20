@@ -87,11 +87,26 @@ def test_lookahead_invariant():
 #corrupt games are skipped; train and val splits partition the valid games
 def test_split_and_corrupt(tmp_path):
     path = write_pgn(tmp_path)
-    train = list(PGNDataSet(path, split="train", val_every=50))
-    val = list(PGNDataSet(path, split="val", val_every=50))
+    train = list(PGNDataSet(path, split="train", val_every=50, shuffle_buffer=0))
+    val = list(PGNDataSet(path, split="val", val_every=50, shuffle_buffer=0))
     # g0 (idx 0) is the only val game (2 plies); g1 (6) + g3 (4) are train;
     # g2 is illegal and skipped from both.
     assert len(val) == 2
     assert len(train) == 10
     # together they cover every valid position exactly once
     assert len(train) + len(val) == 12
+
+
+#the shuffle buffer emits the same set of examples, just reordered
+def test_shuffle_buffer_preserves_examples(tmp_path):
+    path = write_pgn(tmp_path)
+    ordered = list(PGNDataSet(path, val_every=50, shuffle_buffer=0))
+    shuffled = list(PGNDataSet(path, val_every=50, shuffle_buffer=4))
+
+    # same number of examples, and the same multiset of policy targets
+    assert len(shuffled) == len(ordered)
+    assert sorted(e["policy"].item() for e in shuffled) == \
+           sorted(e["policy"].item() for e in ordered)
+    # order actually changed (10 train examples, buffer 4 -> guaranteed reorder)
+    assert [e["policy"].item() for e in shuffled] != \
+           [e["policy"].item() for e in ordered]

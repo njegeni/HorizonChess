@@ -36,6 +36,7 @@ class TrainConfig:
     num_workers: int = 4
     max_steps: int = 100_000
     epochs: int = 1
+    shuffle_buffer: int = 8192     # decorrelate batches (per worker)
 
     # loss weights (forwarded to compute_loss)
     value_weight: float = 1.0
@@ -104,7 +105,7 @@ def build_val_cache(cfg, model_cfg):
     streaming is fast enough that spawning workers for a one-time scan is not
     worth its re-import cost."""
     ds = PGNDataSet(cfg.pgn_path, lookahead_horizon=model_cfg.lookahead_n,
-                    split="val", val_every=cfg.val_every)
+                    split="val", val_every=cfg.val_every, shuffle_buffer=0)
     loader = DataLoader(ds, batch_size=cfg.batch_size, num_workers=0, drop_last=True)
     print(f"building validation set ({cfg.val_batches} batches x {cfg.batch_size}) "
           f"-- one-time scan of the PGN for held-out games...")
@@ -152,7 +153,8 @@ def train(cfg, model_cfg, resume=None):
 
     # dataset and model must agree on the aux-head horizon
     dataset = PGNDataSet(cfg.pgn_path, lookahead_horizon=model_cfg.lookahead_n,
-                         split="train", val_every=cfg.val_every)
+                         split="train", val_every=cfg.val_every,
+                         shuffle_buffer=cfg.shuffle_buffer)
     assert dataset.lookahead_horizon == model_cfg.lookahead_n
 
     loss_kwargs = dict(value_weight=cfg.value_weight, gamma=cfg.gamma,
@@ -245,6 +247,7 @@ def parse_args():
     p.add_argument("--batch-size", type=int, default=TrainConfig.batch_size)
     p.add_argument("--lr", type=float, default=TrainConfig.lr)
     p.add_argument("--num-workers", type=int, default=TrainConfig.num_workers)
+    p.add_argument("--shuffle-buffer", type=int, default=TrainConfig.shuffle_buffer)
     p.add_argument("--max-steps", type=int, default=TrainConfig.max_steps)
     p.add_argument("--epochs", type=int, default=TrainConfig.epochs)
     p.add_argument("--ckpt-dir", default=TrainConfig.ckpt_dir)
@@ -263,6 +266,7 @@ def parse_args():
     train_cfg = TrainConfig(
         pgn_path=a.pgn_path, batch_size=a.batch_size, lr=a.lr,
         num_workers=a.num_workers, max_steps=a.max_steps, epochs=a.epochs,
+        shuffle_buffer=a.shuffle_buffer,
         ckpt_dir=a.ckpt_dir, ckpt_interval=a.ckpt_interval,
         log_interval=a.log_interval, do_val=not a.no_val,
         val_interval=a.val_interval, val_batches=a.val_batches,

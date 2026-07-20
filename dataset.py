@@ -1,4 +1,5 @@
 import logging
+import random
 import chess, chess.pgn
 import torch
 from torch.utils.data import IterableDataset, get_worker_info
@@ -25,16 +26,42 @@ class PGNDataSet(IterableDataset):
     split='val' holds out every val_every-th game (by global index); split='train'
     keeps the rest, so the two are disjoint. Under a multi-worker DataLoader each
     worker strides over its own share of games so no example is produced twice.
+
+    shuffle_buffer: positions are produced in game order, so consecutive examples
+    are highly correlated (same game -> near-constant value target). A rolling
+    reservoir of this many examples is kept and a random one is emitted each step,
+    so a batch mixes positions from many different games. Set 0 to disable.
     """
 
-    def __init__(self, pgn_path, lookahead_horizon=2, split="train", val_every=50):
+    def __init__(self, pgn_path, lookahead_horizon=2, split="train", val_every=50,
+                 shuffle_buffer=8192):
         super().__init__()
         self.pgn_path = pgn_path
         self.lookahead_horizon = lookahead_horizon
         self.split = split
         self.val_every = val_every
+        self.shuffle_buffer = shuffle_buffer
 
     def __iter__(self):
+        # emit in game order, or through a shuffle buffer to decorrelate batches
+        if self.shuffle_buffer <= 1:
+            yield from self._stream()
+            return
+
+        worker = get_worker_info()
+        rng = random.Random(worker.id if worker is not None else 0)
+        buffer = []
+        for example in self._stream():
+            if len(buffer) < self.shuffle_buffer:
+                buffer.append(example)
+            else:
+                j = rng.randrange(len(buffer))
+                yield buffer[j]              # emit a random old one...
+                buffer[j] = example          # ...replace it with the new one
+        rng.shuffle(buffer)                  # drain whatever is left
+        yield from buffer
+
+    def _stream(self):
         worker = get_worker_info()
         num_workers = worker.num_workers if worker is not None else 1
         worker_id = worker.id if worker is not None else 0
