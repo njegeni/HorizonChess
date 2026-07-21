@@ -46,6 +46,7 @@ class TrainConfig:
     gamma: float = 0.85
     w_opp: float = 0.15
     w_self: float = 0.15
+    label_smoothing: float = 0.0
 
     log_interval: int = 100
     ckpt_interval: int = 10_000
@@ -176,7 +177,8 @@ def train(cfg, model_cfg, resume=None):
     assert dataset.lookahead_horizon == model_cfg.lookahead_n
 
     loss_kwargs = dict(value_weight=cfg.value_weight, gamma=cfg.gamma,
-                       w_opp=cfg.w_opp, w_self=cfg.w_self)
+                       w_opp=cfg.w_opp, w_self=cfg.w_self,
+                       label_smoothing=cfg.label_smoothing)
 
     loader = DataLoader(dataset, batch_size=cfg.batch_size, num_workers=cfg.num_workers,
                         pin_memory=(device.type == "cuda"),
@@ -265,6 +267,7 @@ def parse_args():
     p.add_argument("--batch-size", type=int, default=TrainConfig.batch_size)
     p.add_argument("--lr", type=float, default=TrainConfig.lr)
     p.add_argument("--min-lr", type=float, default=TrainConfig.min_lr)
+    p.add_argument("--label-smoothing", type=float, default=TrainConfig.label_smoothing)
     p.add_argument("--num-workers", type=int, default=TrainConfig.num_workers)
     p.add_argument("--shuffle-buffer", type=int, default=TrainConfig.shuffle_buffer)
     p.add_argument("--max-steps", type=int, default=TrainConfig.max_steps)
@@ -285,6 +288,7 @@ def parse_args():
 
     train_cfg = TrainConfig(
         pgn_path=a.pgn_path, batch_size=a.batch_size, lr=a.lr, min_lr=a.min_lr,
+        label_smoothing=a.label_smoothing,
         num_workers=a.num_workers, max_steps=a.max_steps, epochs=a.epochs,
         shuffle_buffer=a.shuffle_buffer,
         ckpt_dir=a.ckpt_dir, ckpt_interval=a.ckpt_interval, keep_last=a.keep_last,

@@ -1,8 +1,12 @@
 import torch
 import torch.nn.functional as F
 
-def compute_loss(outputs, targets, value_weight=1.0, gamma=0.85, w_opp=0.15, w_self=0.15):
-    policy_loss = F.cross_entropy(outputs["policy"], targets["policy"])
+def compute_loss(outputs, targets, value_weight=1.0, gamma=0.85, w_opp=0.15,
+                 w_self=0.15, label_smoothing=0.0):
+    # label_smoothing spreads a little probability mass off the played move,
+    # which curbs overconfidence and helps validation loss / generalization.
+    policy_loss = F.cross_entropy(outputs["policy"], targets["policy"],
+                                  label_smoothing=label_smoothing)
     value_loss = F.mse_loss(outputs["value"], targets["value"])
     total = policy_loss + value_weight * value_loss
 
@@ -18,6 +22,7 @@ def compute_loss(outputs, targets, value_weight=1.0, gamma=0.85, w_opp=0.15, w_s
         ce = F.cross_entropy(
             outputs["lookahead"][:, k][valid],        # (valid, 4672)
             targets["lookahead"][:, k][valid],        # (valid,)
+            label_smoothing=label_smoothing,
         )
         step = k + 1
         w = w_opp if step % 2 == 1 else w_self        # odd = opponent, even = self

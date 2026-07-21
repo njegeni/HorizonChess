@@ -89,6 +89,24 @@ def test_value_weight():
     assert abs(parts["total"].item() - (parts["policy"].item() + 2 * 0.25)) < 1e-3
 
 
+#label smoothing raises the loss floor: even a perfect prediction isn't 0
+def test_label_smoothing():
+    B = 4
+    idx = torch.randint(0, N, (B,))
+    policy = torch.zeros(B, N)
+    policy[torch.arange(B), idx] = 30.0        # confident, correct
+    outputs = {"policy": policy, "value": torch.zeros(B), "lookahead": torch.zeros(B, 2, N)}
+    targets = {
+        "policy": idx, "value": torch.zeros(B),
+        "lookahead": torch.randint(0, N, (B, 2)),
+        "lookahead_mask": torch.zeros(B, 2, dtype=torch.bool),
+    }
+    _, hard = compute_loss(outputs, targets, label_smoothing=0.0)
+    _, soft = compute_loss(outputs, targets, label_smoothing=0.1)
+    assert hard["policy"].item() < 1e-3          # perfect -> ~0 without smoothing
+    assert soft["policy"].item() > 0.5           # smoothing keeps a floor
+
+
 #total carries grad; the logged parts are detached
 def test_grad_and_detached_parts():
     outputs, targets = uniform_case()
