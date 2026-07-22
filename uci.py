@@ -16,6 +16,7 @@ import sys
 
 import chess
 
+import mcts
 from play import load_model, choose_move
 
 
@@ -50,6 +51,11 @@ def main():
                     help="opening sampling temperature (0 = always best move, >1 = more variety)")
     ap.add_argument("--sample-plies", type=int, default=20,
                     help="sample with temperature for this many opening plies, then play best")
+    ap.add_argument("--sims", type=int, default=100,
+                    help="MCTS simulations per move (0 = raw policy, no search). "
+                         "each sim is ~one net eval; lower it for bullet.")
+    ap.add_argument("--c-puct", type=float, default=1.5,
+                    help="MCTS exploration constant")
     args = ap.parse_args()
     if not args.ckpt:
         sys.exit("no checkpoint: pass --ckpt or set HORIZON_CKPT")
@@ -87,7 +93,12 @@ def main():
             else:
                 # sample the opening for variety, then play the best move
                 temp = args.temperature if len(board.move_stack) < args.sample_plies else 0.0
-                move, _ = choose_move(net, board, temp, args.device)
+                if args.sims > 0:
+                    move, _, _ = mcts.best_move(net, board, sims=args.sims,
+                                                c_puct=args.c_puct, temperature=temp,
+                                                device=args.device)
+                else:
+                    move, _ = choose_move(net, board, temp, args.device)
                 send(f"bestmove {move.uci()}")
         elif cmd == "quit":
             break
