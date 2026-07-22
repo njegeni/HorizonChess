@@ -24,6 +24,31 @@ def send(line):
     print(line, flush=True)          # UCI requires flushing after every reply
 
 
+def compute_max_time(cmd, board):
+    """From a `go` command, return a per-move time budget in seconds (or None to
+    fall back to a fixed sim count). Spends a fraction of the remaining clock plus
+    most of the increment, capped so it never burns too much at once, with a small
+    safety margin so it can't flag."""
+    toks = cmd.split()
+    p = {}
+    for i in range(1, len(toks) - 1):
+        if toks[i] in ("wtime", "btime", "winc", "binc", "movetime", "movestogo"):
+            try:
+                p[toks[i]] = int(toks[i + 1])
+            except ValueError:
+                pass
+    if "movetime" in p:
+        return max(p["movetime"] - 100, 30) / 1000.0
+    if "wtime" in p or "btime" in p:
+        my_time = p.get("wtime" if board.turn == chess.WHITE else "btime", 0)
+        my_inc = p.get("winc" if board.turn == chess.WHITE else "binc", 0)
+        mtg = max(p.get("movestogo", 25), 1)
+        budget = my_time / mtg + my_inc * 0.75      # ms
+        budget = min(budget, my_time * 0.4)         # never blow >40% of the clock
+        return max(budget - 100, 30) / 1000.0       # 100 ms safety, 30 ms floor
+    return None
+
+
 def parse_position(cmd):
     # position [startpos | fen <6-field FEN>] [moves m1 m2 ...]
     tokens = cmd.split()
@@ -52,10 +77,12 @@ def main():
     ap.add_argument("--sample-plies", type=int, default=20,
                     help="sample with temperature for this many opening plies, then play best")
     ap.add_argument("--sims", type=int, default=100,
-                    help="MCTS simulations per move (0 = raw policy, no search). "
-                         "each sim is ~one net eval; lower it for bullet.")
+                    help="fallback MCTS sims when the GUI sends no clock (0 = raw policy). "
+                         "with a clock, sims scale to the time budget instead.")
     ap.add_argument("--c-puct", type=float, default=1.5,
                     help="MCTS exploration constant")
+    ap.add_argument("--batch-size", type=int, default=1,
+                    help="leaves per net eval (1 is fastest for this small net)")
     args = ap.parse_args()
     if not args.ckpt:
         sys.exit("no checkpoint: pass --ckpt or set HORIZON_CKPT")
@@ -93,10 +120,14 @@ def main():
             else:
                 # sample the opening for variety, then play the best move
                 temp = args.temperature if len(board.move_stack) < args.sample_plies else 0.0
-                if args.sims > 0:
-                    move, _, _ = mcts.best_move(net, board, sims=args.sims,
+                max_time = compute_max_time(cmd, board)   # None if GUI sent no clock
+                if max_time is not None or args.sims > 0:
+                    # clock present -> time governs (huge sim cap); else fixed sims
+                    sims_cap = 100_000 if max_time is not None else args.sims
+                    move, _, _ = mcts.best_move(net, board, sims=sims_cap,
                                                 c_puct=args.c_puct, temperature=temp,
-                                                device=args.device)
+                                                device=args.device, max_time=max_time,
+                                                batch_size=args.batch_size)
                 else:
                     move, _ = choose_move(net, board, temp, args.device)
                 send(f"bestmove {move.uci()}")
