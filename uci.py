@@ -16,7 +16,7 @@ import sys
 
 import chess
 
-from play import load_model, rank_moves
+from play import load_model, choose_move
 
 
 def send(line):
@@ -46,6 +46,10 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--ckpt", default=os.environ.get("HORIZON_CKPT"))
     ap.add_argument("--device", default="cpu")
+    ap.add_argument("--temperature", type=float, default=1.0,
+                    help="opening sampling temperature (0 = always best move, >1 = more variety)")
+    ap.add_argument("--sample-plies", type=int, default=20,
+                    help="sample with temperature for this many opening plies, then play best")
     args = ap.parse_args()
     if not args.ckpt:
         sys.exit("no checkpoint: pass --ckpt or set HORIZON_CKPT")
@@ -58,7 +62,19 @@ def main():
         if cmd == "uci":
             send("id name HorizonChess")
             send("id author noli")
+            # Declare the options a GUI / lichess-bot commonly sets. We don't act
+            # on them (a bare policy has nothing to tune), but they must be
+            # declared or the client refuses to send setoption for them.
+            send("option name Move Overhead type spin default 10 min 0 max 10000")
+            send("option name Threads type spin default 1 min 1 max 512")
+            send("option name Hash type spin default 16 min 1 max 65536")
+            send("option name Ponder type check default false")
+            send("option name SyzygyPath type string default <empty>")
+            send("option name UCI_Chess960 type check default false")
+            send("option name UCI_Variant type string default chess")
             send("uciok")
+        elif cmd.startswith("setoption"):
+            pass                             # accept and ignore all options
         elif cmd == "isready":
             send("readyok")
         elif cmd == "ucinewgame":
@@ -69,8 +85,10 @@ def main():
             if board.is_game_over():
                 send("bestmove 0000")            # null move: game already over
             else:
-                ranked, _ = rank_moves(net, board, args.device)
-                send(f"bestmove {ranked[0][0].uci()}")
+                # sample the opening for variety, then play the best move
+                temp = args.temperature if len(board.move_stack) < args.sample_plies else 0.0
+                move, _ = choose_move(net, board, temp, args.device)
+                send(f"bestmove {move.uci()}")
         elif cmd == "quit":
             break
 

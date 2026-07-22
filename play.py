@@ -47,6 +47,21 @@ def rank_moves(net, board, device="cpu"):
     return ranked, value
 
 
+@torch.no_grad()
+def choose_move(net, board, temperature=0.0, device="cpu"):
+    """Pick a move. temperature<=0 -> always the top move (deterministic).
+    temperature>0 -> sample from the policy, sharpened/flattened by temperature
+    (t=1 samples proportional to the policy; t<1 favors the best move; t>1 is
+    more random). Used to vary the opening so it doesn't repeat every game."""
+    ranked, value = rank_moves(net, board, device)
+    if temperature <= 0 or len(ranked) == 1:
+        return ranked[0][0], value
+    probs = torch.tensor([p for _, p in ranked], dtype=torch.float)
+    weights = probs ** (1.0 / temperature)          # == softmax(logits / temperature)
+    idx = torch.multinomial(weights, 1).item()
+    return ranked[idx][0], value
+
+
 def show_top(net, board, k, device):
     ranked, value = rank_moves(net, board, device)
     print(f"\nposition value (side to move): {value:+.3f}")
