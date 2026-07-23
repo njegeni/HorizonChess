@@ -4,4 +4,4 @@
 # regardless of the environment lichess-bot itself runs in.
 cd /Users/noli/school/Boston/Timemk/HorizonChess
 exec ./.venv/bin/python uci.py --ckpt weights/datashuffling/step_00301081.pt \
-  --device mps --sims 250
+  --device mps
